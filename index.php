@@ -3,9 +3,9 @@
 $accessKey = 'REPLACE ME';
 $secretKey = 'REPLACE ME';
 
-define('IS_STAGING', $_SERVER['SERVER_NAME'] === 'new.stage.couchbase.com');
+define('IS_STAGING', $_SERVER['SERVER_NAME'] === 'www.stage.couchbase.com');
 define('IS_LOCAL', $_SERVER['SERVER_NAME'] === 'localhost');
-define('INCLUDE_PATH', IS_LOCAL ? '' : '/var/www/domains/couchbase.com/new.stage/htdocs/sites/all/libraries/download/');
+define('INCLUDE_PATH', IS_LOCAL ? '' : '/var/www/domains/couchbase.com/www.stage/htdocs/sites/all/libraries/download/');
 
 // true === /downloads-all; false === /downloads
 define('BY_VERSION', false);
@@ -109,17 +109,31 @@ function collectFor($product_string, $contents) {
   $last_version = 0;
   foreach ($contents as $file) {
     $url = $file['name'];
+
+    // Don't allow funny filenames like releases/clients_$folder$
+    // @daschl, 2012-09-17
+    if(count(explode('/', $file['name'])) < 3) {
+      continue;
+    }
+
     list(, $version, $filename) = explode('/', $file['name']);
 
+    if(BY_VERSION) {
+      $minVersion = 1.7;
+    } else {
+      $minVersion = 1.8;
+    }
     if ($filename === "") continue;
-    else if ($version < 1.7) continue;
+    else if ($version < $minVersion) continue;
     else if (!is_numeric($version[0])) continue;
     else if ($filename === 'index.html') continue;
+    else if(preg_match('/beta|preview/', $filename)) continue;
     else if (substr($filename, -3, 3) === 'md5'
       || substr($filename, -9, 9) === 'blacklist'
       || substr($filename, -7, 7) === 'staging'
       || substr($filename, -3, 3) === 'xml'
       || substr($filename, -3, 3) === 'txt'
+      || substr($filename, -8, 8) ==='manifest'
       || substr($filename, 0, 10) === 'northscale'
       || substr($filename, 0, 15) === 'CouchbaseServer') continue;
     else if ($product_string === 'couchbase-server'
@@ -143,8 +157,15 @@ function collectFor($product_string, $contents) {
       $version = $version === "" ? $alt_version : $version;
       $type = 'source';
     } else {
-      preg_match("/([A-Za-z\-]*)([_]?(win2008)?[_\-](x86)[_]?(64)?)?[_]([0-9\.]*(-dev-preview-[0-9])?(-([0-9]{4,5})-rel)?)[\.|_](.*)/",
+      preg_match("/([A-Za-z\-]*)([_]?(win2008)?[_\-](x86)[_]?(64)?)?[_]([0-9\.]*(-dev-preview-[0-9]|-beta)?(-([0-9]{4,5})-rel)?)[\.|_](.*)/",
         $filename, $matches);
+      
+      // If this regex didn't match too, skip the entry so that it doesn't produce warnings.
+      // @daschl, 2012-09-17
+      if(empty($matches)) {
+        continue;
+      }
+
       list(, $product, , , $arch, $bits, $version, $dev_preview, , $build, $postfix) = $matches;
 
       $dev_preview = $dev_preview ? true : false;
@@ -173,6 +194,12 @@ function collectFor($product_string, $contents) {
     $major_version = substr($version, 0, strpos($version, '.', 3));
     // PHP5.3 edition: $major_version = strstr($version, '.', true);
     $needs_tos = $major_version == 1.7;
+
+    // Initialize with a default date (kinda broken)
+    // @daschl, 2012-09-17
+    if(!isset($file['time'])) {
+      $file['time'] = time();
+    }
 
     $created = date('Y-m-d', $file['time']);
 
@@ -267,18 +294,22 @@ if (BY_VERSION === true) {
   $latest_builds['version'] = 'latest';
   unset($latest_builds['build']);
 
-  $recent_builds_data = array();
   foreach ($products_by_major_version as $k => &$p) {
     if ($p['has_build']) {
+      $recent_builds_data['title'] = '2.0 Recent Builds';
+      array_unshift($p['releases'], $latest_builds);
       $recent_builds_data = $products_by_major_version[$k];
-      unset($products_by_major_version[$k]);
-      $recent_builds_data['title'] = 'Recent Builds';
-      array_unshift($recent_builds_data['releases'], $latest_builds);
     }
   }
-  array_unshift($products_by_major_version, $recent_builds_data);
-
   $products = $products_by_major_version;
+
+  // Unsetting the recent builds for now
+  foreach($products as $key => $product) {
+    if($product['id'] == 'couchbase-server-2-0-builds') {
+      unset($products[$key]);
+    }
+  }
+  $products = array_values($products);
 } else {
   // /downloads
   $latest = null;
@@ -311,6 +342,14 @@ if (BY_VERSION === true) {
   array_unshift($products[0]['releases'], just_the_latest($latest_builds));
   $products[0]['releases'][0]['version'] = '2.0.0 recent builds';
 }
+
+// Removing the recent builds for now.
+foreach($products[0]['releases'] as $index => $release) {
+  if($release['version'] == '2.0.0 recent builds') {
+    unset($products[0]['releases'][$index]);
+  }
+}
+$products[0]['releases'] = array_values($products[0]['releases']);
 
 $products = array('products' => $products,
                   'staging' => (IS_LOCAL || IS_STAGING),
@@ -348,7 +387,7 @@ if ($mimetype === 'application/json') {
   Enterprise or Community. <a href="/couchbase-server/editions">Which one is right for me?</a></div>
 {{/multiple_products}}
 <h3{{^multiple_products}} class="step-1"{{/multiple_products}}{{#has_build}} id="recent-builds"{{/has_build}}>
-  {{title}} {{#has_build}}Recent Build{{/has_build}} Downloads</h3>
+  {{title}} Downloads</h3>
 <div class="cb-download-form">
   <form>
     <select>
@@ -383,7 +422,7 @@ if ($mimetype === 'application/json') {
       {{/has_build}}
       {{#has_build}}
       <h2>
-        Recent Builds</h2>
+        2.0 Recent Builds</h2>
         <p>&nbsp;</p>
       {{/has_build}}
     </div>
@@ -448,8 +487,7 @@ if ($mimetype === 'application/json') {
 </div>
 {{^multiple_products}}
 <p class="cb-all-downloads">
-  Looking for <a href="/downloads-all#couchbase-server-2-0">Couchbase Server 2.0 recent builds</a>,
-  legacy <a href="/downloads-all#couchbase-server-1-7">Membase</a> or other products?
+  Looking for older releases of Couchbase Server or other products?
   <b><a href="/downloads-all"
     style="border-left:2px solid #EDEDE5;padding-left:20px;margin-left:20px">View all of our downloads</a></b>.
 </p>
@@ -457,7 +495,7 @@ if ($mimetype === 'application/json') {
   <div class="grid-4 first">
     <h3 class="step-2">
       Watch how to quick start your cluster</h3>
-    <iframe src="http://player.vimeo.com/video/35242219?title=0&amp;byline=0&amp;portrait=0&amp;color=A30A0A" width="644" height="362" frameborder="0" webkitAllowFullScreen mozallowfullscreen allowFullScreen></iframe></div>
+    <iframe width="644" height="362" src="http://www.youtube.com/embed/S7Io_FUXT8c?rel=0&hd=1" frameborder="0" allowfullscreen></iframe></div>
   <div class="grid-2 last">
     <h3 class="step-3">
       Download client libraries</h3>
@@ -654,3 +692,5 @@ EOD;
   }
   echo $m->render($main, $products, $partials);
 }
+
+?>
